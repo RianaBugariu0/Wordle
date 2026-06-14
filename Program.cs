@@ -1,78 +1,123 @@
-﻿using System.Diagnostics;
+﻿using Silk.NET.Maths;
 using Silk.NET.SDL;
 
-namespace TheAdventure;
+namespace Wordle;
 
 public static class Program
 {
+    private const int WindowWidth = 800;
+    private const int WindowHeight = 700;
+    private const int BoardLeft = 120;
+    private const int BoardTop = 120;
+    private const int TileSize = 60;
+    private const int TileGap = 8;
+
     public static void Main()
     {
-        var sdl = new Sdl(new SdlContext());
+        var game = new WordleGame();
+        var stats = new ScoreStore(GetStatsPath()).Load();
+        var sdl = new Sdl(new WordleSdlContext());
 
-        UInt64 framesRenderedCounter = 0;
-        var timer = new Stopwatch();
-
-        ReadOnlySpan<byte> keyboardState;
-        unsafe
-        {
-            keyboardState = new(sdl.GetKeyboardState(null), (int)KeyCode.Count);
-        }
-
-        Span<byte> mouseButtonStates = stackalloc byte[(int)MouseButton.Count];
-
-        var ev = new Event();
-
-        var sdlInitResult = sdl.Init(Sdl.InitVideo | Sdl.InitAudio | Sdl.InitEvents | Sdl.InitTimer | Sdl.InitGamecontroller |
-                                     Sdl.InitJoystick);
-        if (sdlInitResult < 0)
+        if (sdl.Init(Sdl.InitVideo | Sdl.InitEvents | Sdl.InitTimer) < 0)
         {
             throw new InvalidOperationException("Failed to initialize SDL.");
         }
 
-        IntPtr window;
         unsafe
         {
-            window = (IntPtr)sdl.CreateWindow(
-                "The Adventure", Sdl.WindowposUndefined, Sdl.WindowposUndefined, 800, 800,
-                (uint)WindowFlags.Resizable | (uint)WindowFlags.AllowHighdpi
-            );
+            var window = (IntPtr)sdl.CreateWindow(
+                "Wordle",
+                Sdl.WindowposUndefined,
+                Sdl.WindowposUndefined,
+                WindowWidth,
+                WindowHeight,
+                (uint)WindowFlags.Resizable | (uint)WindowFlags.AllowHighdpi);
 
             if (window == IntPtr.Zero)
             {
-                var ex = sdl.GetErrorAsException();
-                if (ex != null)
+                Console.WriteLine("SDL window could not be created; running in terminal-only mode.");
+                RunTerminalOnlyGame(game, stats);
+                sdl.Quit();
+                return;
+            }
+
+            var renderer = (IntPtr)sdl.CreateRenderer((Window*)window, -1, (uint)RendererFlags.Accelerated);
+            if (renderer == IntPtr.Zero)
+            {
+                Console.WriteLine("SDL renderer could not be created; running in terminal-only mode.");
+                sdl.DestroyWindow((Window*)window);
+                RunTerminalOnlyGame(game, stats);
+                sdl.Quit();
+                return;
+            }
+
+            sdl.RenderSetVSync((Renderer*)renderer, 1);
+            RunGameLoop(sdl, (Renderer*)renderer, ref game, stats);
+            sdl.DestroyWindow((Window*)window);
+        }
+
+        sdl.Quit();
+    }
+
+    private static void RunTerminalOnlyGame(WordleGame game, WordleStats stats)
+    {
+        Console.WriteLine("Wordle is running in terminal-only mode because a graphical renderer is unavailable.");
+        Console.WriteLine("Type a 5-letter word and press Enter to play.");
+
+        var input = string.Empty;
+        while (true)
+        {
+            Console.Write("Your guess: ");
+            var guess = Console.ReadLine()?.Trim().ToUpperInvariant() ?? string.Empty;
+
+            if (guess.Equals("QUIT", StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            if (guess.Length != 5)
+            {
+                Console.WriteLine("Need exactly 5 letters.");
+                continue;
+            }
+
+            var result = game.SubmitGuess(guess);
+            if (result.Status == WordleResultStatus.Ok)
+            {
+                Console.WriteLine($"Result: {result.Status}");
+                stats.GamesPlayed++;
+                if (game.Won)
                 {
-                    throw ex;
+                    stats.Wins++;
+                    stats.BestGuesses = Math.Min(stats.BestGuesses, game.GuessCount);
+                    Console.WriteLine("You won!");
+                    SaveStats(stats);
+                    break;
                 }
 
-                throw new Exception("Failed to create window.");
+                if (game.IsOver)
+                {
+                    Console.WriteLine($"You lost. Answer: {game.Answer}");
+                    SaveStats(stats);
+                    break;
+                }
             }
-        }
-
-        IntPtr renderer;
-        unsafe
-        {
-            renderer = (IntPtr)sdl.CreateRenderer((Window*)window, -1, (uint)RendererFlags.Accelerated);
-            sdl.RenderSetVSync((Renderer*)renderer, 1);
-        }
-
-        if (renderer == IntPtr.Zero)
-        {
-            var ex = sdl.GetErrorAsException();
-            if (ex != null)
+            else if (result.Status == WordleResultStatus.NotInWordList)
             {
-                throw ex;
+                Console.WriteLine("That word is not in the list.");
             }
-
-            throw new Exception("Failed to create renderer.");
         }
+    }
 
-        var startX = 100;
-        var startY = 100;
-        var endX = 200;
-        var endY = 200;
+    private static unsafe void RunGameLoop(Sdl sdl, Renderer* renderer, ref WordleGame game, WordleStats stats)
+    {
+        var quit = false;
+        var ev = new Event();
+        var input = string.Empty;
+        var message = "Type a 5-letter word and press Enter";
+        var gameOver = false;
+        var lastStatus = string.Empty;
 
-        bool quit = false;
         while (!quit)
         {
             while (sdl.PollEvent(ref ev) != 0)
@@ -83,154 +128,172 @@ public static class Program
                     break;
                 }
 
-                switch (ev.Type)
+                if (ev.Type != (uint)EventType.Keydown)
                 {
-                    case (uint)EventType.Windowevent:
-                    {
-                        switch (ev.Window.Event)
-                        {
-                            case (byte)WindowEventID.Shown:
-                            case (byte)WindowEventID.Exposed:
-                            {
-                                break;
-                            }
-                            case (byte)WindowEventID.Hidden:
-                            {
-                                break;
-                            }
-                            case (byte)WindowEventID.Moved:
-                            {
-                                break;
-                            }
-                            case (byte)WindowEventID.SizeChanged:
-                            {
-                                break;
-                            }
-                            case (byte)WindowEventID.Minimized:
-                            case (byte)WindowEventID.Maximized:
-                            case (byte)WindowEventID.Restored:
-                                break;
-                            case (byte)WindowEventID.Enter:
-                            {
-                                break;
-                            }
-                            case (byte)WindowEventID.Leave:
-                            {
-                                break;
-                            }
-                            case (byte)WindowEventID.FocusGained:
-                            {
-                                break;
-                            }
-                            case (byte)WindowEventID.FocusLost:
-                            {
-                                break;
-                            }
-                            case (byte)WindowEventID.Close:
-                            {
-                                break;
-                            }
-                            case (byte)WindowEventID.TakeFocus:
-                            {
-                                unsafe
-                                {
-                                    sdl.SetWindowInputFocus(sdl.GetWindowFromID(ev.Window.WindowID));
-                                }
+                    continue;
+                }
 
-                                break;
-                            }
+                var scancode = ev.Key.Keysym.Scancode;
+                if (scancode == Scancode.ScancodeEscape)
+                {
+                    quit = true;
+                }
+                else if (scancode == Scancode.ScancodeBackspace && input.Length > 0)
+                {
+                    input = input[..^1];
+                }
+                else if (scancode == Scancode.ScancodeReturn && input.Length == 5)
+                {
+                    var result = game.SubmitGuess(input);
+                    if (result.Status == WordleResultStatus.Ok)
+                    {
+                        input = string.Empty;
+                        if (game.Won)
+                        {
+                            message = "You won! Press R for a new game";
+                            gameOver = true;
                         }
-
-                        break;
-                    }
-
-                    case (uint)EventType.Fingermotion:
-                    {
-                        break;
-                    }
-
-                    case (uint)EventType.Mousemotion:
-                    {
-                        if (keyboardState[(byte)KeyCode.LShift] > 0)
+                        else if (game.IsOver)
                         {
-                            endX = ev.Motion.X;
-                            endY = ev.Motion.Y;
+                            message = $"You lost. Answer: {game.Answer}. Press R for a new game";
+                            gameOver = true;
                         }
                         else
                         {
-                            startX = ev.Motion.X;
-                            startY = ev.Motion.Y;
+                            message = "Good guess. Try another one";
                         }
 
-                        break;
-                    }
+                        stats.GamesPlayed++;
+                        if (game.Won)
+                        {
+                            stats.Wins++;
+                            stats.BestGuesses = Math.Min(stats.BestGuesses, game.GuessCount);
+                        }
 
-                    case (uint)EventType.Fingerdown:
-                    {
-                        mouseButtonStates[(byte)MouseButton.Primary] = 1;
-                        break;
+                        SaveStats(stats);
                     }
-                    case (uint)EventType.Mousebuttondown:
+                    else if (result.Status == WordleResultStatus.InvalidLength)
                     {
-                        mouseButtonStates[ev.Button.Button] = 1;
-                        break;
+                        message = "Need exactly 5 letters";
                     }
-
-                    case (uint)EventType.Fingerup:
+                    else if (result.Status == WordleResultStatus.NotInWordList)
                     {
-                        mouseButtonStates[(byte)MouseButton.Primary] = 0;
-                        break;
+                        message = "That word is not in the list";
                     }
-
-                    case (uint)EventType.Mousebuttonup:
+                }
+                else if (gameOver && scancode == Scancode.ScancodeR)
+                {
+                    game = new WordleGame();
+                    input = string.Empty;
+                    message = "Type a 5-letter word and press Enter";
+                    gameOver = false;
+                }
+                else if (scancode is >= Scancode.ScancodeA and <= Scancode.ScancodeZ)
+                {
+                    if (input.Length < 5)
                     {
-                        mouseButtonStates[ev.Button.Button] = 0;
-                        break;
-                    }
-
-                    case (uint)EventType.Mousewheel:
-                    {
-                        break;
-                    }
-
-                    case (uint)EventType.Keyup:
-                    {
-                        break;
-                    }
-
-                    case (uint)EventType.Keydown:
-                    {
-                        Console.WriteLine($"Key down: {(KeyCode)ev.Key.Keysym.Scancode}");
-                        break;
+                        input += ((char)('A' + ((int)scancode - (int)Scancode.ScancodeA))).ToString();
                     }
                 }
             }
 
-            var elapsed = timer.Elapsed;
-            timer.Restart();
-
-            // game.render(renderer, RenderEvent{ elapsed, framesRenderedCounter++ });
-            unsafe
+            var statusText = $"{message}\nWins: {stats.Wins}, Games: {stats.GamesPlayed}, Best: {stats.BestGuesses}";
+            if (statusText != lastStatus)
             {
-                var r = (Renderer *)renderer;
-
-                sdl.SetRenderDrawColor(r, 255, 255, 255, 255);
-                sdl.RenderClear(r);
-
-                sdl.SetRenderDrawColor(r, 255, 0, 0, 255);
-                sdl.RenderDrawLine(r, startX, startY, endX, endY);
-
-                sdl.RenderPresent(r);
+                Console.WriteLine(statusText);
+                lastStatus = statusText;
             }
 
-            ++framesRenderedCounter;
+            Draw(sdl, renderer, game, stats, input, message);
+            System.Threading.Thread.Sleep(16);
         }
+    }
 
-        unsafe
+    private static unsafe void Draw(Sdl sdl, Renderer* renderer, WordleGame game, WordleStats stats, string input, string message)
+    {
+        sdl.SetRenderDrawColor(renderer, 240, 232, 255, 255);
+        sdl.RenderClear(renderer);
+
+        DrawBoard(sdl, renderer, game, input);
+        DrawStatus(sdl, renderer, stats, message);
+        sdl.RenderPresent(renderer);
+    }
+
+    private static unsafe void DrawBoard(Sdl sdl, Renderer* renderer, WordleGame game, string input)
+    {
+        for (var row = 0; row < 6; row++)
         {
-            sdl.DestroyWindow((Window*)window);
+            for (var col = 0; col < 5; col++)
+            {
+                var x = BoardLeft + col * (TileSize + TileGap);
+                var y = BoardTop + row * (TileSize + TileGap);
+                var letter = string.Empty;
+                var color = TileColor.Gray;
+
+                if (row < game.Guesses.Count)
+                {
+                    letter = game.Guesses[row][col].ToString();
+                    var guessResult = game.EvaluateGuess(game.Guesses[row]);
+                    color = guessResult.Colors[col];
+                }
+                else if (row == game.GuessCount && input.Length > col)
+                {
+                    letter = input[col].ToString();
+                }
+
+                DrawTile(sdl, renderer, x, y, letter, color);
+            }
+        }
+    }
+
+    private static unsafe void DrawTile(Sdl sdl, Renderer* renderer, int x, int y, string letter, TileColor color)
+    {
+        var r = 180;
+        var g = 180;
+        var b = 180;
+
+        switch (color)
+        {
+            case TileColor.Green:
+                r = 110; g = 170; b = 120; break;
+            case TileColor.Yellow:
+                r = 210; g = 190; b = 100; break;
         }
 
-        sdl.Quit();
+        sdl.SetRenderDrawColor(renderer, (byte)r, (byte)g, (byte)b, 255);
+        var rect = new Rectangle<int>(x, y, TileSize, TileSize);
+        sdl.RenderFillRect(renderer, ref rect);
+
+        sdl.SetRenderDrawColor(renderer, 60, 60, 60, 255);
+        sdl.RenderDrawRect(renderer, ref rect);
+
+        if (!string.IsNullOrEmpty(letter))
+        {
+            sdl.SetRenderDrawColor(renderer, 255, 255, 255, 255);
+            sdl.RenderDrawLine(renderer, x + 20, y + 18, x + 40, y + 42);
+            sdl.RenderDrawLine(renderer, x + 40, y + 18, x + 20, y + 42);
+        }
+    }
+
+    private static unsafe void DrawStatus(Sdl sdl, Renderer* renderer, WordleStats stats, string message)
+    {
+        sdl.SetRenderDrawColor(renderer, 240, 232, 255, 255);
+        sdl.RenderDrawLine(renderer, 110, 560, 690, 560);
+        sdl.SetRenderDrawColor(renderer, 80, 60, 120, 255);
+        var statusRect = new Rectangle<int>(100, 580, 600, 70);
+        sdl.RenderDrawRect(renderer, ref statusRect);
+        sdl.SetRenderDrawColor(renderer, 30, 20, 80, 255);
+        sdl.RenderDrawLine(renderer, 110, 620, 690, 620);
+
+    }
+
+    private static void SaveStats(WordleStats stats)
+    {
+        new ScoreStore(GetStatsPath()).Save(stats);
+    }
+
+    private static string GetStatsPath()
+    {
+        return Path.Combine(AppContext.BaseDirectory, "stats.json");
     }
 }
