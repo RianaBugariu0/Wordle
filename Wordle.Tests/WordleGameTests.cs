@@ -6,22 +6,37 @@ namespace Wordle.Tests;
 public class WordleGameTests
 {
     [Fact]
-    public void EvaluateGuess_ReturnsCorrectColorsForSimpleGuess()
+    public void TestEvaluateGuess()
     {
-        var game = new WordleGame("PLANT");
-        var result = game.EvaluateGuess("SLATE");
+        WordleGame game = new WordleGame("PLANT");
+        WordleGuessResult result = game.EvaluateGuess("SLATE");
 
         Assert.Equal(WordleResultStatus.Ok, result.Status);
-        Assert.Equal(new[] { TileColor.Gray, TileColor.Green, TileColor.Green, TileColor.Yellow, TileColor.Gray }, result.Colors);
+        Assert.Equal(TileColor.Gray, result.Colors[0]);
+        Assert.Equal(TileColor.Green, result.Colors[1]);
+        Assert.Equal(TileColor.Green, result.Colors[2]);
+        Assert.Equal(TileColor.Yellow, result.Colors[3]);
+        Assert.Equal(TileColor.Gray, result.Colors[4]);
     }
 
     [Fact]
-    public void SubmitGuess_WinsWhenGuessMatchesAnswer()
+    public void TestWin()
     {
-        var game = new WordleGame("PLANT");
-        var result = game.SubmitGuess("PLANT");
+        WordleGame game = new WordleGame("PLANT");
+        WordleGuessResult result = game.SubmitGuess("PLANT");
 
         Assert.True(result.Won);
         Assert.Equal(1, game.GuessCount);
+    }
+
+    [Fact]
+    public void TestKeyboardColors()
+    {
+        WordleGame game = new WordleGame("PLANT", new[] { "PLANT", "SLATE" });
+        game.SubmitGuess("SLATE");
+
+        var keyboard = game.GetKeyboardState();
+        Assert.Equal(TileColor.Green, keyboard['L']);
+        Assert.Equal(TileColor.Yellow, keyboard['T']);
     }
 }

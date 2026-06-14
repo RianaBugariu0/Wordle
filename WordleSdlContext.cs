@@ -42,7 +42,15 @@ public class WordleSdlContext : INativeContext
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {
-            return NativeLibrary.Load("libSDL2-2.0.dylib");
+            foreach (var name in new[] { "libSDL2-2.0.dylib", "libSDL2-2.0.0.dylib", "libSDL2.dylib" })
+            {
+                if (NativeLibrary.TryLoad(name, out var handle))
+                {
+                    return handle;
+                }
+            }
+
+            throw new DllNotFoundException("SDL2 was not found. On macOS run: brew install sdl2");
         }
 
         return NativeLibrary.Load("libSDL2-2.0.so");
